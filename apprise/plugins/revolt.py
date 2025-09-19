@@ -40,6 +40,8 @@ from json import dumps, loads
 
 import requests
 
+from ..attachment.base import AttachBase
+
 from ..common import NotifyFormat, NotifyImageSize, NotifyType
 from ..locale import gettext_lazy as _
 from ..utils.parse import parse_list, validate_regex
@@ -64,8 +66,10 @@ class NotifyRevolt(NotifyBase):
     # Revolt Channel Message
     notify_url = "https://api.revolt.chat/"
 
-    # Revolt supports attachments but doesn't support it here (for now)
-    attachment_support = False
+    upload_url = "https://rc.mrca.uz/autumn/"
+
+    # Support attachments
+    attachment_support = True
 
     # Allows the user to specify the NotifyImageSize object
     image_size = NotifyImageSize.XY_256
@@ -194,7 +198,7 @@ class NotifyRevolt(NotifyBase):
 
         return
 
-    def send(self, body, title="", notify_type=NotifyType.INFO, **kwargs):
+    def send(self, body, title="", notify_type=NotifyType.INFO, attach=None, **kwargs):
         """Perform Revolt Notification."""
 
         if len(self.targets) == 0:
@@ -202,6 +206,16 @@ class NotifyRevolt(NotifyBase):
             return False
 
         payload = {}
+
+        if (
+                attach
+                and self.attachment_support
+                ):
+            attach_ids, has_error = self._send_attachments(
+                    attach=attach
+                    )
+            if not has_error:
+                payload["attachments"] = attach_ids
 
         # Acquire image_url
         image_url = (
@@ -371,6 +385,50 @@ class NotifyRevolt(NotifyBase):
             return (False, content)
 
         return (True, content)
+
+    def _send_attachments(self, attach):
+        """Sends our attachments."""
+        headers = {
+            "User-Agent": self.app_id,
+            "X-Bot-Token": self.bot_token,
+            # "Content-Type": "multipart/form-data",
+            "Accept": "application/json; charset=utf-8",
+        }
+        self.upload_url = f"{self.upload_url}attachments"
+        result = []
+        has_error = False
+        for attachment in attach:
+            if not attachment:
+                has_error = True
+                break
+            # def print_request(response, *args, **kwargs):
+            #     print("--- Request Sent ---")
+            #     print(f"URL: {response.request.url}")
+            #     print(f"Method: {response.request.method}")
+            #     print(f"Headers: {response.request.headers}")
+            #     print("Body:")
+            #     # The body might be a byte stream, so we decode it for printing
+            #     try:
+            #         print(response.request.body.decode('utf-8'))
+            #     except AttributeError:
+            #         print(response.request.body)
+            #     print("--------------------")
+            #     print(response)
+
+            # Create a session and add the hook
+            # session = requests.Session()
+            # session.hooks['response'] = [print_request]
+
+
+            cont = open(attachment.path, "rb")
+            # print(f"Trying: 'file': {attachment.path}, {cont}, {attachment.mimetype}, {headers}")
+            r = requests.post(self.upload_url, headers=headers, files={'file': (attachment.path, open(attachment.path, "rb"), attachment.mimetype)})
+            # session.post(self.upload_url, headers=headers, files={'file': (attachment.path, open(attachment.path, "rb"), attachment.mimetype)})
+
+            print(">", r)
+            print(r.json())
+
+        return result, has_error
 
     @property
     def url_identifier(self):
