@@ -40,8 +40,6 @@ from json import dumps, loads
 
 import requests
 
-from ..attachment.base import AttachBase
-
 from ..common import NotifyFormat, NotifyImageSize, NotifyType
 from ..locale import gettext_lazy as _
 from ..utils.parse import parse_list, validate_regex
@@ -66,7 +64,7 @@ class NotifyRevolt(NotifyBase):
     # Revolt Channel Message
     notify_url = "https://api.revolt.chat/"
 
-    upload_url = "https://rc.mrca.uz/autumn/"
+    upload_url = "https://cdn.revoltusercontent.com/"
 
     # Support attachments
     attachment_support = True
@@ -94,17 +92,12 @@ class NotifyRevolt(NotifyBase):
     # Define object templates
     templates = (
         "{schema}://{bot_token}/{targets}",
-        "{schema}://{server_api_url}/{bot_token}/{targets}",
     )
 
     # Defile out template tokens
     template_tokens = dict(
         NotifyBase.template_tokens,
         **{
-            "server_api_url": {
-                "name": _("Server API URL"),
-                "type": "string",
-            },
             "bot_token": {
                 "name": _("Bot Token"),
                 "type": "string",
@@ -137,6 +130,8 @@ class NotifyRevolt(NotifyBase):
                 "alias_of": "bot_token",
             },
             "icon_url": {"name": _("Icon URL"), "type": "string"},
+            "api_url": {"name": _("Revolt API URL"), "type": "string"},
+            "autumn_url": {"name": _("Revolt Autumg (fileserver) API URL"), "type": "string"},
             "url": {
                 "name": _("Embed URL"),
                 "type": "string",
@@ -154,13 +149,18 @@ class NotifyRevolt(NotifyBase):
         targets,
         icon_url=None,
         link=None,
-        server_api_url=None,
+        api_url=None,
+        autumn_url=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
 
-        if server_api_url:
-            self.notify_url = server_api_url
+        if api_url:
+            print("YIIII", api_url)
+            self.notify_url = f"https://{api_url}"
+        if autumn_url:
+            print("YIIII", autumn_url)
+            self.upload_url = f"https://{autumn_url}"
         # Bot Token
         self.bot_token = validate_regex(bot_token)
         if not self.bot_token:
@@ -198,8 +198,16 @@ class NotifyRevolt(NotifyBase):
 
         return
 
-    def send(self, body, title="", notify_type=NotifyType.INFO, attach=None, **kwargs):
+    def send(
+            self,
+            body,
+            title="",
+            notify_type=NotifyType.INFO,
+            attach=None,
+             **kwargs
+    ):
         """Perform Revolt Notification."""
+        has_error = False
 
         if len(self.targets) == 0:
             self.logger.warning("There were not Revolt channels to notify.")
@@ -211,11 +219,14 @@ class NotifyRevolt(NotifyBase):
                 attach
                 and self.attachment_support
                 ):
-            attach_ids, has_error = self._send_attachments(
+            attach_ids = self._send_attachments(
                     attach=attach
                     )
-            if not has_error:
+            if attach_ids:
                 payload["attachments"] = attach_ids
+            else:
+                # At least one attachment upload failed.
+                has_error = True
 
         # Acquire image_url
         image_url = (
@@ -244,7 +255,6 @@ class NotifyRevolt(NotifyBase):
         else:
             payload["content"] = body if not title else f"{title}\n{body}"
 
-        has_error = False
         channel_ids = list(self.targets)
         for channel_id in channel_ids:
             postokay, _response = self._send(payload, channel_id)
@@ -389,46 +399,34 @@ class NotifyRevolt(NotifyBase):
     def _send_attachments(self, attach):
         """Sends our attachments."""
         headers = {
-            "User-Agent": self.app_id,
             "X-Bot-Token": self.bot_token,
-            # "Content-Type": "multipart/form-data",
-            "Accept": "application/json; charset=utf-8",
+            "Accept": "*/*",
         }
         self.upload_url = f"{self.upload_url}attachments"
         result = []
-        has_error = False
         for attachment in attach:
             if not attachment:
-                has_error = True
-                break
-            # def print_request(response, *args, **kwargs):
-            #     print("--- Request Sent ---")
-            #     print(f"URL: {response.request.url}")
-            #     print(f"Method: {response.request.method}")
-            #     print(f"Headers: {response.request.headers}")
-            #     print("Body:")
-            #     # The body might be a byte stream, so we decode it for printing
-            #     try:
-            #         print(response.request.body.decode('utf-8'))
-            #     except AttributeError:
-            #         print(response.request.body)
-            #     print("--------------------")
-            #     print(response)
-
-            # Create a session and add the hook
-            # session = requests.Session()
-            # session.hooks['response'] = [print_request]
+                return False
 
 
-            cont = open(attachment.path, "rb")
-            # print(f"Trying: 'file': {attachment.path}, {cont}, {attachment.mimetype}, {headers}")
-            r = requests.post(self.upload_url, headers=headers, files={'file': (attachment.path, open(attachment.path, "rb"), attachment.mimetype)})
-            # session.post(self.upload_url, headers=headers, files={'file': (attachment.path, open(attachment.path, "rb"), attachment.mimetype)})
+            with open(attachment.path, "rb") as content:
+                r = requests.post(self.upload_url, headers=headers, files={
+                    "file": (
+                        attachment.name,
+                        content,
+                        attachment.mimetype
+                        )
+                    }
+                )
 
-            print(">", r)
-            print(r.json())
+                print(r)
+                if (not r.ok):
+                    return False
+                # Add id field from the response
+                # to attach to the message's attachments.
+                result.append(r.json()["id"])
 
-        return result, has_error
+        return result
 
     @property
     def url_identifier(self):
@@ -475,26 +473,14 @@ class NotifyRevolt(NotifyBase):
             # We're done early as we couldn't load the results
             return results
 
-        _host = NotifyRevolt.unquote(results["host"])
-        selfhosted = _host.endswith("/")
-        if selfhosted:
-            r = requests.get(f"https://{_host}")
-            if r.ok:
-                results["server_api_url"] = f"https://{_host}"
+        # Store our bot token
+        bot_token = NotifyRevolt.unquote(results["host"])
 
-                bot_token = NotifyRevolt.split_path(results["fullpath"])[0]
-                targets = NotifyRevolt.split_path(results["fullpath"])[1:]
-                results["bot_token"] = bot_token
-                results["targets"] = targets
-        else:
-            # Store our bot token
-            bot_token = NotifyRevolt.unquote(results["host"])
+        # Now fetch the Channel IDs
+        targets = NotifyRevolt.split_path(results["fullpath"])
 
-            # Now fetch the Channel IDs
-            targets = NotifyRevolt.split_path(results["fullpath"])
-
-            results["bot_token"] = bot_token
-            results["targets"] = targets
+        results["bot_token"] = bot_token
+        results["targets"] = targets
 
         # Support the 'to' variable so that we can support rooms this way too
         # The 'to' makes it easier to use yaml configuration
@@ -518,13 +504,28 @@ class NotifyRevolt(NotifyBase):
                 results["qsd"]["icon_url"]
             )
 
+
         if "url" in results["qsd"]:
             results["link"] = NotifyRevolt.unquote(results["qsd"]["url"])
+
+        if "api_url" in results["qsd"]:
+            results["api_url"] = NotifyRevolt.unquote(
+                results["qsd"]["api_url"]
+            )
+
+        if "autumn_url" in results["qsd"]:
+            results["autumn_url"] = NotifyRevolt.unquote(
+                results["qsd"]["autumn_url"]
+            )
 
         if "format" not in results["qsd"] and (
             "url" in results or "icon_url" in results
         ):
             # Markdown is implied
             results["format"] = NotifyFormat.MARKDOWN
+
+        # if "attachment_api_url" not in results["qsd"]:
+        #     # Markdown is implied
+        #     results["format"] = NotifyFormat.MARKDOWN
 
         return results
